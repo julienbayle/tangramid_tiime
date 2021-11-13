@@ -30,7 +30,7 @@ jobs:
       - uses: actions/upload-artifact@v2
         with:
           name: gestion.exe
-          path: build/gestion/gestion.exe
+          path: dist/gestion.exe
           if-no-files-found: error
     
     
