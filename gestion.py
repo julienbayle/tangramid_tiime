@@ -1,27 +1,37 @@
+import configparser
 import pandas as pd
 from pandas import ExcelWriter
 import numpy as np
 from itertools import combinations
+from datetime import datetime
 import re
 
 # Objectif :
 # Lire les fichiers de l'export Tiime et en faire un fichier pivot
 # pour lecture des données depuis un Excel de synthèse
 
-# Paramètres
-transactionsFile='tiime/transactions_bancaire.xlsx'
-expenditureJusticationFile='tiime/recus.xlsx'
-analysisFile='Tableau de suivi.xlsx'
-analysisSheetIndex=1
-projectTagColumnIndex=2
-people = ['manuela', 'vanessa']
+# Lecture des paramètres
 
-# Etape 1 - Lecture du fichier Excel pour récupérer les tags reconnaissables
+config = configparser.ConfigParser()
+config.read('gestion.ini')
+
+transactionsFile=config['Tiime']['TransactionsFilePath']
+expenditureJusticationsFile=config['Tiime']['ExpenditureJusticationsFilePath']
+invoicesFile=config['Tiime']['InvoicesFilePath']
+
+analysisFile=config['AnalysisFile']['FilePath']
+analysisFileMainSheetName=config['AnalysisFile']['MainSheetName']
+analysisFileTagColumnIndex=int(config['AnalysisFile']['TagsColumnIndex'])
+
+companyStartDate=datetime.strptime(config['Company']['StartDate'], '%d/%m/%Y')
+people = config['Company']['People'].split(',')
+
+# Etape 1 - Lecture du fichier Excel pour récupérer les tags valides
 
 validTags=set()
-df = pd.read_excel(analysisFile, sheet_name=analysisSheetIndex)
+df = pd.read_excel(analysisFile, sheet_name=analysisFileMainSheetName)
 
-for cell in np.asarray(df[df.columns[projectTagColumnIndex]]):
+for cell in np.asarray(df[df.columns[analysisFileTagColumnIndex]]):
   tags = sorted(tuple(filter(lambda term: len(term)>0 and term[0]=='#', str(cell).split())))
   if tags:
     validTags.update([" ".join(map(lambda term: term[1:], tags))])
@@ -29,19 +39,31 @@ for cell in np.asarray(df[df.columns[projectTagColumnIndex]]):
 print("Liste des tags valides : ", validTags)
 
 
+# Function pour génération des couples de tags valides
+# En pratique il peut y avoir plusieurs tags à ignoré saisis dans Tiime
+
+def prepareTags(t):
+  tags = t.lower().replace(" ", "").split(',')
+  return set([' '.join(a) if type(a) is tuple else a for a in  tags + list(combinations(sorted(tags),2))])
+
+
 # Etape 2.1 - Lecture et préparation du fichier des transactions
 
 transactionsDF = pd.read_excel(transactionsFile)
-transactionsDF = transactionsDF.rename(columns={ "Intitulé de la transaction" : "Intitulé" })
-transactionsDF.Commentaire = transactionsDF.Commentaire.replace(np.nan, "").apply(lambda t: t.lower())
-transactionsDF['FinalTag'] = transactionsDF.Tags.replace(np.nan, "").apply(lambda t: set([' '.join(a) if type(a) is tuple else a for a in t.lower().replace(" ", "").split(',') + list(combinations(sorted(t.lower().replace(" ", "").split(',')),2))]) )
+transactionsDF = transactionsDF.rename(columns={
+  "Intitulé de la transaction" : "Intitulé", 
+  "Date de la transaction" : "Date"})
+transactionsDF = transactionsDF.drop(['Id', 'IBAN du compte', "Date de l'opération"], axis=1)
+
 transactionsDF.Reçus = transactionsDF.Reçus.replace(np.nan, "")
 transactionsDF.Factures = transactionsDF.Factures.replace(np.nan, "")
-transactionsDF = transactionsDF.drop(['Id', 'IBAN du compte', "Date de l'opération"], axis=1)
+transactionsDF.Commentaire = transactionsDF.Commentaire.replace(np.nan, "").apply(lambda t: t.lower())
+transactionsDF.Tags = transactionsDF.Tags.replace(np.nan, "")
+
 transactionsDF['Montant TVA'] = 0
 transactionsDF['Montant HT'] = transactionsDF['Montant TTC']
-transactionsDF['Mois'] = transactionsDF['Date de la transaction'].apply(lambda t: t.replace(day=1).strftime("%d/%m/%Y"))
-transactionsDF['Date de la transaction'] = transactionsDF['Date de la transaction'].apply(lambda t: t.strftime("%d/%m/%Y"))
+transactionsDF['Mois'] = transactionsDF['Date'].apply(lambda t: (t.replace(day=1) if t > companyStartDate else companyStartDate).strftime("%d/%m/%Y"))
+transactionsDF['Date'] = transactionsDF['Date'].apply(lambda t: t.strftime("%d/%m/%Y"))
 
 
 # Etape 2.2 - Afficher une synthèse de l'avancement du pointage comptable
@@ -57,15 +79,17 @@ for name in people:
 print("Nombre de transactions à traiter :", len(transactionsDF.index) - nbOK)
 
 
-# Etape 2.3 - Transaction sans justificatif, sans facture => Appliquer le tag unique #nonaffecte et aucun tag valide, sinon, ne conserver que les tags valides
+# Etape 2.3 - Appliquer le tag unique #nonaffecte si aucun tag valide, sinon, ne conserver que les tags valides
+
+transactionsDF['FinalTag'] = transactionsDF.Tags.apply(prepareTags).apply(lambda tags: 'nonaffecte' if len(tags & validTags) == 0 else ' '.join(tags & validTags))
+transactionsDF['FinalTag'] = transactionsDF.FinalTag.apply(lambda t: ' '.join(map(lambda n: '#'+n, t.split(' '))))
+
+
+# Etape 2.4 - Pour éviter les lignes en doublons, ne pas conserver les transactions liées à un justificatif
 
 noJustification = transactionsDF.Reçus.apply(lambda t: len(t) == 0)
-noInvoice = transactionsDF.Factures.apply(lambda t: len(t) == 0)
-transactionsDF['FinalTag'] = transactionsDF.FinalTag.apply(lambda tags: 'nonaffecte' if len(tags & validTags) == 0 else ' '.join(tags & validTags))
-transactionsDF['FinalTag'] = transactionsDF.FinalTag.apply(lambda t: ' '.join(map(lambda n: '#'+n, t.split(' '))))
-filteredTransactionsDF = transactionsDF[noJustification].drop(["Reçus", "Factures"], axis=1)
-
-print(filteredTransactionsDF.head(100))
+filteredTransactionsDF = transactionsDF[noJustification].drop(["Reçus"], axis=1)
+#print(filteredTransactionsDF.head(100))
 
 nafCount = filteredTransactionsDF.FinalTag.str.count('nonaffecte').sum()
 print("Nombre de transactions avec justificatif ou facture associée : ", len(transactionsDF.index) - len(filteredTransactionsDF.index))
@@ -75,17 +99,25 @@ print("Nombre de transactions bien affectée sans justificatif : ", len(filtered
 
 # Etape 3.1 - Lecture et préparation du fichier des justificatifs
 
-justifDF = pd.read_excel(expenditureJusticationFile)
+justifDF = pd.read_excel(expenditureJusticationsFile)
+
+justifDF = justifDF.drop(["Id", "Date d'ajout", "Source"], axis=1)
+justifDF = justifDF.rename(columns={
+  "Intitulé de la transaction" : "Intitulé", 
+  "Date du reçu" : "Date"})
+
 justifDF.Commentaire = justifDF.Commentaire.replace(np.nan, "").apply(lambda t: t.lower())
 justifDF["Type d'opération"] = "Justificatif"
 justifDF['Transactions bancaires'] = justifDF['Transactions bancaires'].replace(np.nan, "")
-justifDF = justifDF.drop(["Id", "Date d'ajout", "Source"], axis=1)
-justifDF['Mois'] = justifDF['Date du reçu'].apply(lambda t: t.replace(day=1).strftime("%d/%m/%Y"))
-justifDF['Date du reçu'] = justifDF['Date du reçu'].apply(lambda t: t.strftime("%d/%m/%Y"))
-justifDF['FinalTag'] = justifDF.Tags.replace(np.nan, "").apply(lambda t: set([' '.join(a) if type(a) is tuple else a for a in t.lower().replace(" ", "").split('|') + list(combinations(sorted(t.lower().replace(" ", "").split('|')),2))]) )
+justifDF['Mois'] = justifDF['Date'].apply(lambda t: (t.replace(day=1) if t > companyStartDate else companyStartDate).strftime("%d/%m/%Y"))
+justifDF['Date'] = justifDF['Date'].apply(lambda t: t.strftime("%d/%m/%Y"))
+
+justifDF['FinalTag'] = justifDF.Tags.replace(np.nan, "").apply(prepareTags)
 justifDF['FinalTag'] = justifDF.FinalTag.apply(lambda tags: 'nonaffecte' if len(tags & validTags) == 0 else ' '.join(tags & validTags))
 justifDF['FinalTag'] = justifDF.FinalTag.apply(lambda t: ' '.join(map(lambda n: '#'+n, t.split(' '))))
-print(justifDF.head(100))
+#print(justifDF.head(100))
+
+# Etape 3.2 - Synthèse des justificatifs
 
 nbOK = justifDF.Commentaire.str.count('ok.*').sum()
 print("Nombre de justificatifs OK : ", nbOK)
@@ -105,7 +137,39 @@ noTransactionDF = justifDF[justifDF["Transactions bancaires"].apply(lambda t: le
 print("Nombre de justificatifs sans transaction liée", len(noTransactionDF.index))
 print("Montant total TTC pour les justificatifs sans transaction liée", noTransactionDF["Montant TTC"].sum())
 
-with ExcelWriter("data.xlsx") as writer:
-  pd.concat([justifDF, filteredTransactionsDF]).to_excel(writer)
+# Etape 4 - Ajout des informations de facturation
 
-input("Taper entrer pour terminer...")
+invoicesDF = pd.read_excel(invoicesFile)
+
+invoicesDF = invoicesDF.drop(["id", "pays du client", "Transaction(s) liée(s)"], axis=1)
+invoicesDF = invoicesDF.drop(list(filter(lambda t: re.match('montant TVA ([0-9\.]+)%', t), invoicesDF.columns)), axis=1)
+invoicesDF = invoicesDF.rename(columns={
+  "Intitulé de la transaction" : "Intitulé", 
+  "Transaction(s) liée(s)" : "Transactions bancaires",
+  "date de facture" : "Date",
+  "montant TTC " :  "Montant TTC",
+  "montant HT " : "Montant HT"})
+
+invoicesDF["numéro de facture"] = invoicesDF["numéro de facture"].replace(np.nan, "").apply(lambda t: str(t))
+invoicesDF["Intitulé"] = invoicesDF["numéro de facture"] + " / " + invoicesDF["nom du client"] + " / " + invoicesDF["intitulé"]
+invoicesDF = invoicesDF.drop(["numéro de facture", "nom du client", "intitulé"], axis=1)
+
+invoicesDF["Type d'opération"] = "Facture"
+invoicesDF.Date = invoicesDF.Date.apply(lambda t: datetime.strptime(str(t), '%Y-%m-%d 00:00:00'))
+invoicesDF['Mois'] = invoicesDF['Date'].apply(lambda t: (t.replace(day=1) if t > companyStartDate else companyStartDate).strftime("%d/%m/%Y"))
+invoicesDF['Date'] = invoicesDF['Date'].apply(lambda t: t.strftime("%d/%m/%Y"))
+invoicesDF['FinalTag'] = '#facture'
+
+sendInvoice = invoicesDF['statut de la facture'].apply(lambda t: t != 'Brouillon')
+filteredInvoiceDF = invoicesDF[sendInvoice].drop(["statut de la facture"], axis=1)
+#print(filteredInvoiceDF.head())
+
+print("Nombre de factures envoyées", len(filteredInvoiceDF.index))
+print("Montant total des factures HT", filteredInvoiceDF['Montant HT'].sum())
+
+# Etape 5 - Fusion des informations
+
+with ExcelWriter("data.xlsx") as writer:
+  pd.concat([justifDF, filteredTransactionsDF, filteredInvoiceDF]).to_excel(writer)
+
+input("Export terminé sans erreur, taper entrer pour terminer...")
