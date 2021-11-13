@@ -107,3 +107,5 @@ print("Montant total TTC pour les justificatifs sans transaction liée", noTrans
 
 with ExcelWriter("data.xlsx") as writer:
   pd.concat([justifDF, filteredTransactionsDF]).to_excel(writer)
+
+input("Taper entrer pour terminer...")

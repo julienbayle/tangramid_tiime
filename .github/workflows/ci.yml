@@ -26,7 +26,7 @@ jobs:
           pip install pyinstaller
       - name: build with pyinstaller
         run: |
-          pyinstaller gestion.py
+          python -m PyInstaller --onefile --noconfirm gestion.py
       - uses: actions/upload-artifact@v2
         with:
           name: gestion.exe
