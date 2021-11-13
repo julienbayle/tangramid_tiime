@@ -27,5 +27,10 @@ jobs:
       - name: build with pyinstaller
         run: |
           pyinstaller gestion.py
+      - uses: actions/upload-artifact@v2
+        with:
+          name: gestion.exe
+          path: build/gestion/gestion.exe
+          if-no-files-found: error
     
     
