@@ -1,2 +1,3 @@
-# tangramid_tiime
-Traitement des fichiers Tiime pour lecture via Excel
+# TANGRAMID Tiime
+
+Ce script permet de transformer les fichiers Tiime vers un CSV pour en faciliter ensuite l'exploitation
