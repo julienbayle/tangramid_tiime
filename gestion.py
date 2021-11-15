@@ -22,13 +22,14 @@ invoicesFile=config['Tiime']['InvoicesFilePath']
 analysisFile=config['AnalysisFile']['FilePath']
 analysisFileMainSheetName=config['AnalysisFile']['MainSheetName']
 analysisFileTagColumnIndex=int(config['AnalysisFile']['TagsColumnIndex'])
+validTags=set(config['AnalysisFile']['ValidTag'].lower().replace(" ", "").split(','))
+ignoreLineWithTag=config['AnalysisFile']['IgnoreLineWithTag']
 
 companyStartDate=datetime.strptime(config['Company']['StartDate'], '%d/%m/%Y')
-people = config['Company']['People'].split(',')
+people = config['Company']['People'].replace(" ", "").split(',')
 
 # Etape 1 - Lecture du fichier Excel pour récupérer les tags valides
 
-validTags=set()
 df = pd.read_excel(analysisFile, sheet_name=analysisFileMainSheetName)
 
 for cell in np.asarray(df[df.columns[analysisFileTagColumnIndex]]):
@@ -43,8 +44,9 @@ print("Liste des tags valides : ", validTags)
 # En pratique il peut y avoir plusieurs tags à ignoré saisis dans Tiime
 
 def prepareTags(t):
-  tags = t.lower().replace(" ", "").split(',')
-  return set([' '.join(a) if type(a) is tuple else a for a in  tags + list(combinations(sorted(tags),2))])
+  tags = t.lower().replace(" ", "")
+  tags = tags.split('|') if '|' in tags else tags.split(',')
+  return set([' '.join(a) if type(a) is tuple else a for a in tags + list(combinations(sorted(tags),2))])
 
 
 # Etape 2.1 - Lecture et préparation du fichier des transactions
@@ -78,17 +80,24 @@ for name in people:
 
 print("Nombre de transactions à traiter :", len(transactionsDF.index) - nbOK)
 
+# Etape 2.3 - Appliquer automatiquement le tag #encaissement pour toutes les lignes associées à une facture
 
-# Etape 2.3 - Appliquer le tag unique #nonaffecte si aucun tag valide, sinon, ne conserver que les tags valides
+hasInvoice = transactionsDF.Factures.apply(lambda t: len(t) > 0)
+transactionsDF.Tags = transactionsDF.Tags.map(lambda t: "encaissement").where(hasInvoice,  transactionsDF.Tags)
+
+
+# Etape 2.4 - Appliquer le tag unique #nonaffecte si aucun tag valide, sinon, ne conserver que les tags valides
 
 transactionsDF['FinalTag'] = transactionsDF.Tags.apply(prepareTags).apply(lambda tags: 'nonaffecte' if len(tags & validTags) == 0 else ' '.join(tags & validTags))
 transactionsDF['FinalTag'] = transactionsDF.FinalTag.apply(lambda t: ' '.join(map(lambda n: '#'+n, t.split(' '))))
 
 
-# Etape 2.4 - Pour éviter les lignes en doublons, ne pas conserver les transactions liées à un justificatif
+# Etape 2.5 - Pour éviter les lignes en doublons, ne pas conserver les transactions liées à un justificatif
+#             De plus, ignorer les lignes lié à des opération d'annule et remplace (debit / remboursement)
 
 noJustification = transactionsDF.Reçus.apply(lambda t: len(t) == 0)
-filteredTransactionsDF = transactionsDF[noJustification].drop(["Reçus"], axis=1)
+doNotIgnore = transactionsDF.Tags.apply(lambda tags: ignoreLineWithTag not in tags)
+filteredTransactionsDF = transactionsDF[noJustification & doNotIgnore].drop(["Reçus"], axis=1)
 #print(filteredTransactionsDF.head(100))
 
 nafCount = filteredTransactionsDF.FinalTag.str.count('nonaffecte').sum()
@@ -115,11 +124,23 @@ justifDF['Date'] = justifDF['Date'].apply(lambda t: t.strftime("%d/%m/%Y"))
 justifDF['FinalTag'] = justifDF.Tags.replace(np.nan, "").apply(prepareTags)
 justifDF['FinalTag'] = justifDF.FinalTag.apply(lambda tags: 'nonaffecte' if len(tags & validTags) == 0 else ' '.join(tags & validTags))
 justifDF['FinalTag'] = justifDF.FinalTag.apply(lambda t: ' '.join(map(lambda n: '#'+n, t.split(' '))))
+
+justifDF['Montant TTC'] = -justifDF['Montant TTC']
+justifDF['Montant TVA'] = -justifDF['Montant TVA']
+justifDF['Montant HT'] = -justifDF['Montant HT']
+
+notZero = justifDF['Montant TTC'].apply(lambda s: s != 0)
+
+# Etape 3.2 - On ignore dans l'export les justificatifs sans montant (exemple : justificatif de TVA à 0)
+#             Car ils sont légitimement pas associés à une transaction et n'apporte rien à la gestion analytique
+
+filteredJustifDF = justifDF[notZero]
 #print(justifDF.head(100))
 
-# Etape 3.2 - Synthèse des justificatifs
 
-nbOK = justifDF.Commentaire.str.count('ok.*').sum()
+# Etape 3.3 - Synthèse des justificatifs
+
+nbOK = filteredJustifDF.Commentaire.str.count('ok.*').sum()
 print("Nombre de justificatifs OK : ", nbOK)
 
 for name in people:
@@ -160,6 +181,8 @@ invoicesDF['Mois'] = invoicesDF['Date'].apply(lambda t: (t.replace(day=1) if t >
 invoicesDF['Date'] = invoicesDF['Date'].apply(lambda t: t.strftime("%d/%m/%Y"))
 invoicesDF['FinalTag'] = '#facture'
 
+invoicesDF['Montant TVA'] = invoicesDF['Montant TTC'] - invoicesDF['Montant HT']
+
 sendInvoice = invoicesDF['statut de la facture'].apply(lambda t: t != 'Brouillon')
 filteredInvoiceDF = invoicesDF[sendInvoice].drop(["statut de la facture"], axis=1)
 #print(filteredInvoiceDF.head())
@@ -170,6 +193,6 @@ print("Montant total des factures HT", filteredInvoiceDF['Montant HT'].sum())
 # Etape 5 - Fusion des informations
 
 with ExcelWriter("data.xlsx") as writer:
-  pd.concat([justifDF, filteredTransactionsDF, filteredInvoiceDF]).to_excel(writer)
+  pd.concat([filteredJustifDF, filteredTransactionsDF, filteredInvoiceDF]).to_excel(writer)
 
 input("Export terminé sans erreur, taper entrer pour terminer...")
