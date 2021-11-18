@@ -1,4 +1,5 @@
 import configparser
+from typing import Final
 import pandas as pd
 from pandas import ExcelWriter
 import numpy as np
@@ -24,6 +25,7 @@ analysisFileMainSheetName=config['AnalysisFile']['MainSheetName']
 analysisFileTagColumnIndex=int(config['AnalysisFile']['TagsColumnIndex'])
 validTags=set(config['AnalysisFile']['ValidTag'].lower().replace(" ", "").split(','))
 ignoreLineWithTag=config['AnalysisFile']['IgnoreLineWithTag']
+priorityTags=config['AnalysisFile']['priorityTags']
 
 companyStartDate=datetime.strptime(config['Company']['StartDate'], '%d/%m/%Y')
 people = config['Company']['People'].replace(" ", "").split(',')
@@ -190,9 +192,31 @@ filteredInvoiceDF = invoicesDF[sendInvoice].drop(["statut de la facture"], axis=
 print("Nombre de factures envoyées", len(filteredInvoiceDF.index))
 print("Montant total des factures HT", filteredInvoiceDF['Montant HT'].sum())
 
-# Etape 5 - Fusion des informations
+# Etape 5 - Fusion des informations et gestion des tags multiples
+
+dataDF = pd.concat([filteredJustifDF, filteredTransactionsDF, filteredInvoiceDF])
+
+def electTag(t):
+  tags = t.split(' ')
+  for tag in tags:
+    for ptag in priorityTags:
+      if ptag in tag:
+        return tag
+  return tags[0]
+
+multipleTags = dataDF.FinalTag.apply(lambda t: len(t.split(' ')))
+nbMultiple = multipleTags[multipleTags > 1].count()
+if nbMultiple > 0:
+  print("Nombre de lignes avec plusieurs tags : ", nbMultiple)
+  print("Sélection automatique d'un tag, résultat :")
+  
+  updateDF = dataDF[multipleTags > 1][["Date", "Intitulé", "FinalTag"]]
+
+  dataDF.FinalTag = np.where(multipleTags > 1, dataDF.FinalTag.apply(lambda t: electTag(t)), dataDF.FinalTag)
+  updateDF["SelectedTag"] = dataDF.FinalTag[multipleTags > 1]
+  print(updateDF.rename(columns={"FinalTag":"Tags"}))
 
 with ExcelWriter("data.xlsx") as writer:
-  pd.concat([filteredJustifDF, filteredTransactionsDF, filteredInvoiceDF]).to_excel(writer)
+  dataDF.to_excel(writer)
 
 input("Export terminé sans erreur, taper entrer pour terminer...")
