@@ -18,6 +18,7 @@ config.read('gestion.ini')
 
 transactionsFile=config['Tiime']['TransactionsFilePath']
 expenditureJusticationsFile=config['Tiime']['ExpenditureJusticationsFilePath']
+expenditureJustificationsIgnoreIds = {int(x) if x.isdigit() else 0 for x in config['Tiime']['ExpenditureJustificationsIgnoreIds'].replace(" ", "").split(',')}
 invoicesFile=config['Tiime']['InvoicesFilePath']
 
 analysisFile=config['AnalysisFile']['FilePath']
@@ -112,7 +113,7 @@ print("Nombre de transactions bien affectée sans justificatif : ", len(filtered
 
 justifDF = pd.read_excel(expenditureJusticationsFile)
 
-justifDF = justifDF.drop(["Id", "Date d'ajout", "Source"], axis=1)
+justifDF = justifDF.drop(["Date d'ajout", "Source"], axis=1)
 justifDF = justifDF.rename(columns={
   "Intitulé de la transaction" : "Intitulé", 
   "Date du reçu" : "Date"})
@@ -131,14 +132,17 @@ justifDF['Montant TTC'] = -justifDF['Montant TTC']
 justifDF['Montant TVA'] = -justifDF['Montant TVA']
 justifDF['Montant HT'] = -justifDF['Montant HT']
 
-notZero = justifDF['Montant TTC'].apply(lambda s: s != 0)
-
 # Etape 3.2 - On ignore dans l'export les justificatifs sans montant (exemple : justificatif de TVA à 0)
 #             Car ils sont légitimement pas associés à une transaction et n'apporte rien à la gestion analytique
+#             Puis on force la suppression de justificatifs dont la suppression dans Tiime ne fonctionne pas 
+#             (cause : bug tiime)
 
-filteredJustifDF = justifDF[notZero]
+notZero = justifDF['Montant TTC'].apply(lambda s: s != 0)
+notIgnored = justifDF['Id'].apply(lambda id: int(id) not in expenditureJustificationsIgnoreIds)
+
+filteredJustifDF = justifDF[notZero & notIgnored]
+filteredJustifDF = filteredJustifDF.drop(["Id"], axis=1)
 #print(justifDF.head(100))
-
 
 # Etape 3.3 - Synthèse des justificatifs
 
@@ -146,17 +150,17 @@ nbOK = filteredJustifDF.Commentaire.str.count('ok.*').sum()
 print("Nombre de justificatifs OK : ", nbOK)
 
 for name in people:
-  nb = justifDF.Commentaire.str.count('action '+name+'.*').sum()
+  nb = filteredJustifDF.Commentaire.str.count('action '+name+'.*').sum()
   print("Nombre de justificatifs avec action de la part de " + name + " : ", nb)
   nbOK = nbOK + nb
 
-print("Nombre de justificatifs à traiter :", len(justifDF.index) - nbOK)
+print("Nombre de justificatifs à traiter :", len(filteredJustifDF.index) - nbOK)
 
-nafCount = justifDF.FinalTag.str.count('nonaffecte').sum()
-print("Nombre de justificatifs bien affectés : ", len(justifDF.index) - nafCount)
+nafCount = filteredJustifDF.FinalTag.str.count('nonaffecte').sum()
+print("Nombre de justificatifs bien affectés : ", len(filteredJustifDF.index) - nafCount)
 print("Nombre de justificatifs mal affectés : ", nafCount)
 
-noTransactionDF = justifDF[justifDF["Transactions bancaires"].apply(lambda t: len(t) == 0)]
+noTransactionDF = filteredJustifDF[filteredJustifDF["Transactions bancaires"].apply(lambda t: len(t) == 0)]
 print("Nombre de justificatifs sans transaction liée", len(noTransactionDF.index))
 print("Montant total TTC pour les justificatifs sans transaction liée", noTransactionDF["Montant TTC"].sum())
 
